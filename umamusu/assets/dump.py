@@ -1,4 +1,5 @@
 from collections import defaultdict
+from io import BytesIO
 from pathlib import Path
 
 import UnityPy
@@ -7,7 +8,55 @@ from UnityPy.files import ObjectReader
 
 from ..shared import meta_cursor, state
 from . import logger
+import struct
+import sys
 
+ABKey = bytes(
+    [
+        0x53, 0x2B, 0x46, 0x31, 0xE4, 0xA7, 0xB9, 0x47, 0x3E, 0x7C, 0xFB
+    ])
+
+def generate_keys(base_keys: bytes, key: int) -> bytes:
+    base_len = len(base_keys)
+    keys = bytearray(base_len * 8)
+
+    # Convert int key to bytes (little-endian)
+    key_bytes = struct.pack('<Q', key & 0xFFFFFFFFFFFFFFFF)
+    # If system is big-endian, reverse to match C# BitConverter behavior
+    if sys.byteorder != 'little':
+        key_bytes = key_bytes[::-1]
+
+    for i in range(base_len):
+        b = base_keys[i]
+        base_offset = i * 8
+        for j in range(8):
+            keys[base_offset + j] = b ^ key_bytes[j]
+
+    return bytes(keys)
+
+def list_valid_kinds():
+    if not state.appdata_path.exists():
+        logger.error(f"AppData folder does not exist: {state.storage_path}")
+        return
+
+    query = "SELECT DISTINCT m FROM a ORDER BY m"
+
+    with meta_cursor() as cursor:
+        cursor.execute(query)
+        kinds = [row[0] for row in cursor.fetchall()]
+
+    logger.info(f"Valid values of m: {kinds}")
+    return kinds
+
+def decrypt_uma_assetbundle(input_path: Path, keys: bytes, base_keys_len: int):
+    HEADER_SIZE = 256
+    with open(input_path, "rb") as f_in:
+        data = f_in.read()
+        decrypted = bytearray(data)
+        total_len = len(decrypted)
+        for i in range(HEADER_SIZE, total_len):
+            decrypted[i] ^= keys[i % (base_keys_len * 8)]
+        return decrypted
 
 def assets_dump(args):
     if not state.appdata_path.exists():
@@ -22,17 +71,18 @@ def assets_dump(args):
     if args.skip_i:
         offset_query = "OFFSET {}".format(args.skip_i)
 
-    query = "SELECT n, h, m FROM a {} ORDER BY i {}".format(where_query, offset_query)
+    query = "SELECT n, h, m, e FROM a {} ORDER BY i {}".format(where_query, offset_query)
 
     with meta_cursor() as cursor:
         cursor.execute(query)
-        rows: list[(str, str, str)] = cursor.fetchall()
+        rows = cursor.fetchall()
 
     dat_path = state.appdata_path / "dat"
     assets_path = state.storage_path / "assets"
+
     skipped = 0
-    i = 0
-    for i, (row_path, row_hash, row_kind) in enumerate(rows):
+    for i, (row_path, row_hash, row_kind, key) in enumerate(rows):
+        fKey = generate_keys(ABKey, key)
         if i > 0 and i % 5000 == 0:
             logger.debug(f"processed {i} DB rows (skipped {skipped})...")
 
@@ -52,16 +102,28 @@ def assets_dump(args):
 
         dump_path.mkdir(parents=True, exist_ok=True)
 
-        pack = UnityPy.load(str(appdata_file))
-        class_objects = defaultdict(list)
-        for object in pack.objects:
-            class_objects[object.get_class()].append(object)
+        try:
+            decrypted_data = decrypt_uma_assetbundle(appdata_file, fKey, len(ABKey))
+        except Exception as e:
+            logger.error(f"Failed to decrypt {row_hash}: {e}")
+            skipped += 1
+            continue
+    
+        try:
+            pack = UnityPy.load(BytesIO(decrypted_data))
+            class_objects = defaultdict(list)
+            for obj in pack.objects:
+                class_objects[obj.get_class()].append(obj)
 
-        if Texture2D in class_objects:
-            texture_dump(class_objects, dump_path, row_kind)
+            if Texture2D in class_objects:
+                texture_dump(class_objects, dump_path, row_kind)
+            
+        except Exception as e:
+            logger.error(f"Failed to load: {row_hash} ({e})")
+            skipped += 1
+            continue
 
-    logger.debug(f"finished processing {i} DB rows")
-
+    logger.debug(f"finished processing {i} DB rows (skipped {skipped})")
 
 def texture_dump(class_objects: dict[type, list[ObjectReader]], path: Path, kind: str):
     texture_images = []
@@ -119,7 +181,6 @@ def texture_dump(class_objects: dict[type, list[ObjectReader]], path: Path, kind
 
         image.save(path / image_name)
         names.add(image_name)
-
 
 def image_resize(name: str, kind: str):
     resize = None

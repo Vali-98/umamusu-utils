@@ -1,6 +1,6 @@
 import enum
 import logging
-import sqlite3
+import apsw
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,20 +19,25 @@ class State:
 state = State(*[None] * 6)
 
 # DB-related
-_master_conn: sqlite3.Connection = None
-_meta_conn: sqlite3.Connection = None
+_master_conn: apsw.Connection | None = None
+_meta_conn: apsw.Connection | None = None
 
 
 @contextmanager
-def _db_cursor(conn: sqlite3.Connection):
+def _db_cursor(conn: apsw.Connection):
+    """
+    Context manager for APSW cursors.
+    APSW cursors don't need explicit close, but this keeps symmetry and safety.
+    """
     cur = conn.cursor()
     try:
         yield cur
     finally:
-        cur.close()
+        cur = None  # release reference
 
 
 def master_cursor():
+    """Return a context-managed APSW cursor for the master database."""
     global _master_conn
 
     if _master_conn is None:
@@ -40,24 +45,43 @@ def master_cursor():
         if not _master_path.exists():
             _master_path = state.appdata_path / "master/master.mdb"
         if not _master_path.exists():
-            raise Exception("master DB path does not exist: {}", _master_path)
+            raise FileNotFoundError(f"master DB path does not exist: {_master_path}")
 
-        _master_conn = sqlite3.connect(_master_path)
+        _master_conn = apsw.Connection(str(_master_path))
 
     return _db_cursor(_master_conn)
 
+GlobalDBKey = bytes([
+    0x56, 0x63, 0x6B, 0x63, 0x42, 0x72, 0x37, 0x76,
+    0x65, 0x70, 0x41, 0x62
+])
+
+DBBaseKey = bytes([
+    0xF1, 0x70, 0xCE, 0xA4, 0xDF, 0xCE, 0xA3, 0xE1,
+    0xA5, 0xD8, 0xC7, 0x0B, 0xD1, 0x00, 0x00, 0x00
+])
+
+
+def gen_final_key(key: bytes) -> bytes:
+    if len(DBBaseKey) < 13:
+        raise ValueError("Invalid Base Key length")
+
+    # XOR each byte in key with DBBaseKey[i % 13]
+    return bytes((key[i] ^ DBBaseKey[i % 13]) for i in range(len(key)))
 
 def meta_cursor():
+    """Return a context-managed APSW cursor for the meta database."""
     global _meta_conn
+
     if _meta_conn is None:
         _meta_path = state.meta_path
         if not _meta_path.exists():
             _meta_path = state.appdata_path / "meta"
         if not _meta_path.exists():
-            raise Exception("meta DB path does not exist: {}", _meta_path)
+            raise FileNotFoundError(f"meta DB path does not exist: {_meta_path}")
 
-        _meta_conn = sqlite3.connect(_meta_path)
-
+        _meta_conn = apsw.Connection(str(_meta_path))
+    _meta_conn.pragma("hexkey",gen_final_key(GlobalDBKey).hex())
     return _db_cursor(_meta_conn)
 
 
@@ -84,11 +108,11 @@ class CustomAdapter(logging.LoggerAdapter):
                 return f"{self.OKGREEN}{msg}{self.ENDC}", kwargs
             elif status == Status.ERR:
                 return f"{self.FAIL}{msg}{self.ENDC}", kwargs
-
         return msg, kwargs
 
 
 def get_logger(name: str):
+    """Get a logger, writing to file if state.log_path is set."""
     logger = logging.getLogger(name)
     if state.log_path is None:
         logger.setLevel(logging.DEBUG)

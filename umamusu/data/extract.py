@@ -29,6 +29,7 @@ def characard_extract(args):
 
 def supportcard_extract(args):
     with master_cursor() as cursor:
+        # Step 1: Basic support card info
         cursor.execute("""
             SELECT c.id, c.rarity, c.command_id, c.start_date, n.text
             FROM support_card_data c
@@ -37,19 +38,64 @@ def supportcard_extract(args):
         """)
         support_card_rows = cursor.fetchall()
 
+        # Step 2: Load stat type names (category 151)
+        cursor.execute("""
+            SELECT "index", text
+            FROM text_data
+            WHERE category = 151
+        """)
+        stat_name_map = {row[0]: row[1].lower().replace(' ', '_') for row in cursor.fetchall()}
+
+        # Step 3: Load support_card_effect data
+        # We find the max value across all limit_lv columns, ignoring -1
+        cursor.execute("""
+            SELECT id, type,
+                    MAX(
+                        limit_lv5, limit_lv10, limit_lv15, limit_lv20, limit_lv25,
+                        limit_lv30, limit_lv35, limit_lv40, limit_lv45, limit_lv50
+                    ) AS max_value
+            FROM support_card_effect_table
+        """)
+        effect_rows = cursor.fetchall()
+
+        # Aggregate main effect stats
+        effect_stats = {}
+        for card_id, stat_type, max_value in effect_rows:
+            if card_id not in effect_stats:
+                effect_stats[card_id] = {}
+            stat_name = stat_name_map.get(stat_type, f"type_{stat_type}")
+            effect_stats[card_id][stat_name] = effect_stats[card_id].get(stat_name, 0) + max_value
+
+        # Step 4: Load unique effects (additive)
+        cursor.execute("""
+            SELECT id, type_0, value_0, type_1, value_1
+            FROM support_card_unique_effect
+        """)
+        unique_rows = cursor.fetchall()
+
+        for card_id, t0, v0, t1, v1 in unique_rows:
+            if card_id not in effect_stats:
+                effect_stats[card_id] = {}
+            for t, v in ((t0, v0), (t1, v1)):
+                if t is None or v is None or t == -1:
+                    continue
+                stat_name = stat_name_map.get(t, f"type_{t}")
+                effect_stats[card_id][stat_name] = effect_stats[card_id].get(stat_name, 0) + v
+
+    # Step 5: Combine results
     support_cards = []
     for id, rarity, type, start_date, name in support_card_rows:
-        support_cards.append(
-            {
-                "id": id,
-                "name": name,
-                "rarity": rarity,
-                "type": type,
-                "ts": start_date,
-            }
-        )
+        support_cards.append({
+            "id": id,
+            "name": name,
+            "rarity": rarity,
+            "type": type,
+            "ts": start_date,
+            "stats": effect_stats.get(id, {})
+        })
 
     return [("supportcard.json", support_cards)]
+
 
 
 def factor_extract(args):

@@ -3,7 +3,7 @@ from ..shared import get_logger, state
 logger = get_logger(__name__)
 
 
-KINDS = ["skill", "supportcard"]
+KINDS = ["skill", "supportcard", "chara", "outgame", "atlas"]
 
 
 def assets_main(args):
