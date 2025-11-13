@@ -3,24 +3,26 @@ import json
 from ..shared import Status, master_cursor, state
 from . import logger
 
-
 def characard_extract(args):
     with master_cursor() as cursor:
         cursor.execute("""
-            SELECT c.id, c.chara_id, n.text
-            FROM card_data c
-            JOIN text_data n ON n."index" = c.id AND n.category = 4
-            ORDER BY c.default_rarity DESC, c.id
+            SELECT n."index", n.text
+            FROM text_data n
+            WHERE n.category = 4
+              AND CAST(n."index" AS TEXT) LIKE '1%'
+            ORDER BY n."index"
         """)
-        chara_card_rows = cursor.fetchall()
+        text_rows = cursor.fetchall()
 
     chara_cards = []
-    for card_id, chara_id, name in chara_card_rows:
+    for index, text in text_rows:
+        # derive chara_id from the first 4 digits of index
+        chara_id = int(str(index)[:4])
         chara_cards.append(
             {
-                "id": card_id,
+                "id": index,
                 "chara_id": chara_id,
-                "name": name,
+                "name": text,
             }
         )
 
@@ -97,6 +99,25 @@ def supportcard_extract(args):
     return [("supportcard.json", support_cards)]
 
 
+def supportcard_extract_id_only(args):
+    with master_cursor() as cursor:
+        cursor.execute("""
+            SELECT n."index", n.text
+            FROM text_data n
+            WHERE n.category = 75
+            ORDER BY n."index"
+        """)
+        support_card_rows = cursor.fetchall()
+    support_cards = []
+    for index, text in support_card_rows:
+        support_cards.append(
+            {
+                "id": index,
+                "name": text,
+            }
+        )
+    return [("supportcardidonly.json", support_cards)]
+
 
 def factor_extract(args):
     with master_cursor() as cursor:
@@ -162,6 +183,7 @@ def skill_extract(args):
 
 
 EXTRACTORS = {
+    "supportcardidonly" : supportcard_extract_id_only,
     "supportcard": supportcard_extract,
     "characard": characard_extract,
     "factor": factor_extract,

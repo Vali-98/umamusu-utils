@@ -5,7 +5,7 @@ from pathlib import Path
 import UnityPy
 from UnityPy.classes import Sprite, Texture2D
 from UnityPy.files import ObjectReader
-
+from tqdm import tqdm
 from ..shared import meta_cursor, state
 from . import logger
 import struct
@@ -65,6 +65,7 @@ def assets_dump(args):
 
     where_query = ""
     if args.kind:
+        # to filter out, add  AND n LIKE '%chara_stand______1_____' for standing portraits only
         where_query = "WHERE m IN ({})".format(",".join([f"'{k}'" for k in args.kind]))
 
     offset_query = ""
@@ -81,11 +82,11 @@ def assets_dump(args):
     assets_path = state.storage_path / "assets"
 
     skipped = 0
-    for i, (row_path, row_hash, row_kind, key) in enumerate(rows):
+    for i, (row_path, row_hash, row_kind, key) in enumerate(
+        tqdm(rows, desc="Processing DB rows", unit="row", total=len(rows))
+    ):
         fKey = generate_keys(ABKey, key)
-        if i > 0 and i % 5000 == 0:
-            logger.debug(f"processed {i} DB rows (skipped {skipped})...")
-
+        
         if row_path.startswith("/"):
             continue
 

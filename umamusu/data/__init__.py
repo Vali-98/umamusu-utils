@@ -3,7 +3,7 @@ from ..shared import get_logger, state
 logger = get_logger(__name__)
 
 
-KINDS = ["characard", "supportcard", "factor", "skill"]
+KINDS = ["characard", "supportcard", "factor", "skill", "supportcardidonly"]
 
 
 def data_main(args):

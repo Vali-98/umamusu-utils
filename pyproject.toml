@@ -9,6 +9,7 @@ dependencies = [
     "apsw-sqlite3mc>=3.51.0.0",
     "lz4>=4.4.5",
     "pefile>=2024.8.26",
+    "tdqm>=0.0.1",
     "unitypy>=1.23.0",
 ]
 

@@ -48,7 +48,7 @@ def master_cursor():
             raise FileNotFoundError(f"master DB path does not exist: {_master_path}")
 
         _master_conn = apsw.Connection(str(_master_path))
-
+    
     return _db_cursor(_master_conn)
 
 GlobalDBKey = bytes([
@@ -68,7 +68,7 @@ def gen_final_key(key: bytes) -> bytes:
 
     # XOR each byte in key with DBBaseKey[i % 13]
     return bytes((key[i] ^ DBBaseKey[i % 13]) for i in range(len(key)))
-
+import sqlite3
 def meta_cursor():
     """Return a context-managed APSW cursor for the meta database."""
     global _meta_conn
@@ -79,9 +79,10 @@ def meta_cursor():
             _meta_path = state.appdata_path / "meta"
         if not _meta_path.exists():
             raise FileNotFoundError(f"meta DB path does not exist: {_meta_path}")
-
         _meta_conn = apsw.Connection(str(_meta_path))
+    
     _meta_conn.pragma("hexkey",gen_final_key(GlobalDBKey).hex())
+
     return _db_cursor(_meta_conn)
 
 
@@ -132,3 +133,47 @@ def get_logger(name: str):
 class AppDataException(Exception):
     def __init__(self):
         super().__init__("Unable to find AppData folder")
+
+
+def extract_db(_meta_conn):
+    try:
+        backup_path = Path("./backup.db")
+        if backup_path.exists():
+            backup_path.unlink()
+
+        dest = sqlite3.connect(str(backup_path))
+        dest_cursor = dest.cursor()
+        src_cursor = _meta_conn.cursor()
+
+        # 1️⃣ Copy schema (skip internal sqlite_* objects)
+        for (sql,) in src_cursor.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE sql NOT NULL "
+            "AND type IN ('table','index','trigger','view') "
+            "AND name NOT LIKE 'sqlite_%'"
+        ):
+            dest_cursor.execute(sql)
+
+        # 2️⃣ Copy data table by table (skip internal sqlite_* tables)
+        for (table_name,) in src_cursor.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        ):
+            columns = [
+                r[1]
+                for r in src_cursor.execute(f"PRAGMA table_info({table_name})")
+            ]
+            colnames = ", ".join(columns)
+            placeholders = ", ".join("?" * len(columns))
+            for row in src_cursor.execute(f"SELECT * FROM {table_name}"):
+                dest_cursor.execute(
+                    f"INSERT INTO {table_name} ({colnames}) VALUES ({placeholders})",
+                    row,
+                )
+
+        dest.commit()
+        dest.close()
+
+    except Exception as e:
+        print(f"Warning: Failed to create unencrypted backup: {e}")
+    
